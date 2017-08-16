@@ -38,6 +38,7 @@
           port :: integer() | undefined,
           password :: binary() | undefined,
           database :: binary() | undefined,
+          sentinel :: undefined | atom(),
           reconnect_sleep :: reconnect_sleep() | undefined,
           connect_timeout :: integer() | undefined,
 
@@ -70,6 +71,10 @@ stop(Pid) ->
 %%====================================================================
 
 init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout]) ->
+    Sentinel = case Host of
+        "sentinel:"++MasterStr -> list_to_atom(MasterStr);
+         _ -> undefined
+    end,
     State = #state{host = Host,
                    port = Port,
                    database = read_database(Database),
@@ -78,7 +83,8 @@ init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout]) ->
                    connect_timeout = ConnectTimeout,
 
                    parser_state = eredis_parser:init(),
-                   queue = queue:new()},
+                   queue = queue:new(),
+                   sentinel = Sentinel},
 
     case connect(State) of
         {ok, NewState} ->
@@ -160,12 +166,16 @@ handle_info({tcp_closed, _Socket}, #state{queue = Queue} = State) ->
     %% Throw away the socket and the queue, as we will never get a
     %% response to the requests sent on the old socket. The absence of
     %% a socket is used to signal we are "down"
-    {noreply, State#state{socket = undefined, queue = queue:new()}};
+    {ok, StateNew} = start_reconnect(State#state{socket = undefined}),
+    {noreply, StateNew};
 
 %% Redis is ready to accept requests, the given Socket is a socket
 %% already connected and authenticated.
-handle_info({connection_ready, Socket}, #state{socket = undefined} = State) ->
-    {noreply, State#state{socket = Socket}};
+handle_info({connection_ready, Socket, Host, Port}, #state{socket = undefined} = State) ->
+    {noreply, State#state{socket = Socket, host=Host, port=Port}};
+
+handle_info({sentinel, {reconnect, _MasterName, Host, Port}}, State) ->
+    do_sentinel_reconnect(Host, Port, State);
 
 %% eredis can be used in Poolboy, but it requires to support a simple API
 %% that Poolboy uses to manage the connections.
@@ -304,7 +314,18 @@ safe_send(Pid, Value) ->
 %% the correct database. These commands are synchronous and if Redis
 %% returns something we don't expect, we crash. Returns {ok, State} or
 %% {SomeError, Reason}.
-connect(State) ->
+
+connect(#state{sentinel = undefined} = State) ->
+    connect1(State);
+connect(#state{sentinel = Master} = State) ->
+    case eredis_sentinel:get_master(Master, true) of
+        {ok, {Host, Port}} ->
+            connect1(State#state{host=Host, port=Port});
+        {error, Error} ->
+            {error, {sentinel_error, Error}}
+    end.
+
+connect1(State) ->
     {ok, {AFamily, Addr}} = get_addr(State#state.host),
     case gen_tcp:connect(Addr, State#state.port,
                          [AFamily | ?SOCKET_OPTS], State#state.connect_timeout) of
@@ -374,8 +395,8 @@ do_sync_command(Socket, Command) ->
 %% connection, give the socket to the redis client.
 reconnect_loop(Client, #state{reconnect_sleep = ReconnectSleep} = State) ->
     case catch(connect(State)) of
-        {ok, #state{socket = Socket}} ->
-            Client ! {connection_ready, Socket},
+        {ok, #state{socket = Socket, host=Host, port=Port}} ->
+            Client ! {connection_ready, Socket, Host, Port},
             gen_tcp:controlling_process(Socket, Client),
             Msgs = get_all_messages([]),
             [Client ! M || M <- Msgs];
@@ -403,3 +424,33 @@ get_all_messages(Acc) ->
     after 0 ->
         lists:reverse(Acc)
     end.
+
+%% Handle sentinel "reconnect to new master" message
+%% 1. we already connected to new master - ignore
+do_sentinel_reconnect(Host, Port, #state{host=Host,port=Port}=State) ->
+    {noreply, State};
+%% 2. we are waiting for reconnecting already - ignore
+do_sentinel_reconnect(_Host, _Port, #state{socket=undefined}=State) ->
+    {noreply, State};
+%% 3. we are not supposed to reconnect - stop processing
+do_sentinel_reconnect(_Host, _Port, #state{reconnect_sleep=no_reconnect}=State) ->
+    {stop, sentinel_reconnect, State};
+%% 4. we are connected to wrong master - reconnect
+do_sentinel_reconnect(Host, Port, State) ->
+    {ok, StateNew} = start_reconnect(State#state{host=Host, port=Port}),
+    {noreply, StateNew}.
+
+%% @doc Start reconnecting loop, close old connection if present.
+-spec start_reconnect(#state{}) -> {ok, #state{}}.
+start_reconnect(#state{socket=undefined} = State) ->
+    Self = self(),
+    spawn(fun() -> reconnect_loop(Self, State) end),
+
+    %% Throw away the socket and the queue, as we will never get a
+    %% response to the requests sent on the old socket. The absence of
+    %% a socket is used to signal we are "down"
+    %% TODO shouldn't we need to send error reply to waiting clients?
+    {ok, State#state{queue = queue:new()}};
+start_reconnect(#state{socket=Socket} = State) ->
+    gen_tcp:close(Socket),
+    start_reconnect(State#state{socket=undefined}).
