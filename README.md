@@ -279,3 +279,23 @@ Although this project is almost a complete rewrite, many patterns are
 the same as you find in Erldis, most notably the queueing of requests.
 
 `create_multibulk/1` and `to_binary/1` were taken verbatim from Erldis.
+
+## SSL support
+```erlang
+%% SSL
+Options = [{options, [{ssl_options, [{cacertfile, "CA"},
+                                     {certfile, "Cert"},
+                                     {keyfile, "Key"}]},
+                      {tcp_options, []}]].
+{ok, C1} = eredis:start_link("127.0.0.1", 6379, 0, "", 100, 5000, Options).
+
+{ok,<<"OK">>} = eredis:q(C1, ["SET", ssl, ok]).
+{ok,<<"ok">>} = eredis:q(C1, ["GET", ssl]).
+{ok,[<<"ok">>]} = eredis:q(C1, ["MGET", ssl]).
+
+%% TCP
+{ok, C2} = eredis:start_link("127.0.0.1", 6379).
+{ok,<<"OK">>} = eredis:q(C2, ["SET", tcp, ok]).
+{ok,<<"ok">>} = eredis:q(C2, ["GET", tcp]).
+
+```

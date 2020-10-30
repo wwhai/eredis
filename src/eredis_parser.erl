@@ -67,7 +67,8 @@ init() ->
 %% of a response
 parse(#pstate{state = undefined} = State, NewData) ->
     %% Look at the first byte to get the type of reply
-    case NewData of
+    B = parse_type(NewData),
+    case B of
         %% Status
         <<$+, Data/binary>> ->
             return_result(parse_simple(Data), State, status_continue);
@@ -93,7 +94,6 @@ parse(#pstate{state = undefined} = State, NewData) ->
             %% response, but cannot make any sense of it
             {error, unknown_response}
     end;
-
 %% The following clauses all match on different continuation states
 
 parse(#pstate{state = bulk_continue,
@@ -111,8 +111,13 @@ parse(#pstate{state = status_continue,
 %%
 %% MULTIBULK
 %%
+parse_type(B) when is_binary(B) -> B;
+parse_type(T=L) when is_list(T) -> list_to_binary(L);
+parse_type(_)  -> "".
 
 parse_multibulk(Data) when is_binary(Data) -> parse_multibulk(buffer_create(Data));
+
+parse_multibulk(Data) when is_list(Data) -> parse_multibulk(buffer_create(list_to_binary(Data)));
 
 parse_multibulk(Buffer) ->
     case get_newline_pos(Buffer) of
@@ -122,7 +127,6 @@ parse_multibulk(Buffer) ->
             OffsetNewlinePos = NewlinePos - 1,
             <<$*, Size:OffsetNewlinePos/binary, ?NL, Bulk/binary>> = buffer_to_binary(Buffer),
             IntSize = list_to_integer(binary_to_list(Size)),
-
             do_parse_multibulk(IntSize, buffer_create(Bulk))
     end.
 
@@ -174,6 +178,7 @@ do_parse_multibulk(Count, Buffer, Acc) ->
 %%
 
 parse_bulk(Data) when is_binary(Data) -> parse_bulk(buffer_create(Data));
+parse_bulk(Data) when is_list(Data) -> parse_bulk(buffer_create(list_to_binary(Data)));
 
 parse_bulk(Buffer) ->
   case buffer_hd(Buffer) of

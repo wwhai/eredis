@@ -14,7 +14,7 @@
 -define(TIMEOUT, 5000).
 
 -export([start_link/0, start_link/1, start_link/2, start_link/3, start_link/4,
-         start_link/5, start_link/6, stop/1, q/2, q/3, qp/2, qp/3, q_noreply/2,
+         start_link/5, start_link/6, start_link/7, stop/1, q/2, q/3, qp/2, qp/3, q_noreply/2,
          q_async/2, q_async/3]).
 
 %% Exported for testing
@@ -46,7 +46,10 @@ start_link(Host, Port, Database, Password) ->
 start_link(Host, Port, Database, Password, ReconnectSleep) ->
     start_link(Host, Port, Database, Password, ReconnectSleep, ?TIMEOUT).
 
-start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout)
+start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout) ->
+    start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, []).
+
+start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, Options)
   when is_list(Host),
        is_integer(Port),
        is_integer(Database) orelse Database == undefined,
@@ -55,7 +58,7 @@ start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout)
        is_integer(ConnectTimeout) ->
 
     eredis_client:start_link(Host, Port, Database, Password,
-                             ReconnectSleep, ConnectTimeout).
+                             ReconnectSleep, ConnectTimeout, Options).
 
 %% @doc: Callback for starting from poolboy
 -spec start_link(server_args()) -> {ok, Pid::pid()} | {error, Reason::term()}.
@@ -66,7 +69,8 @@ start_link(Args) ->
     Password       = proplists:get_value(password, Args, ""),
     ReconnectSleep = proplists:get_value(reconnect_sleep, Args, 100),
     ConnectTimeout = proplists:get_value(connect_timeout, Args, ?TIMEOUT),
-    start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout).
+    Options = proplists:get_value(options, Args, []),
+    start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, Options).
 
 stop(Client) ->
     eredis_client:stop(Client).
