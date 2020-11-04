@@ -74,7 +74,7 @@ start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, Optio
                 ) -> {ok, Pid::pid()} | {error, Reason::term()}.
 start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout) ->
     gen_server:start_link(?MODULE, [Host, Port, Database, Password,
-                                    ReconnectSleep, ConnectTimeout, undefined], []).
+                                    ReconnectSleep, ConnectTimeout, []], []).
 stop(Pid) ->
     gen_server:call(Pid, stop).
 
@@ -359,8 +359,7 @@ connect(#state{sentinel = Master} = State) ->
     end.
 
 connect1(State) ->
-    Options = State#state.options,
-    case Options of
+    case proplists:get_value(ssl_options , State#state.options, []) of
         [] ->
             connect_with_tcp(State);
         _ ->
@@ -379,21 +378,17 @@ connect_with_tcp(State) ->
 connect_with_ssl(State) ->
     {ok, {_, Addr}} = get_addr(State#state.host),
     {ok, _}  = application:ensure_all_started(ssl),
-    SslOptions =  proplists:get_value(ssl_options , State#state.options, ""),
-    case SslOptions of
-        [] -> connect_with_tcp(State);
-        _O ->
-                 case ssl:connect(Addr, State#state.port,
-                                              [{cacertfile, proplists:get_value(cacertfile , SslOptions, "")},
-                                               {certfile, proplists:get_value(certfile, SslOptions, "")},
-                                               {keyfile, proplists:get_value(keyfile, SslOptions, "")}],
-                                        State#state.connect_timeout) of
-                    {ok, SSLSocket} ->
-                        ok = ssl:setopts(SSLSocket, get_tcp_options(State)),
-                        handle_connect(State, {ok, ssl, SSLSocket});
-                    {error, Reason} ->
-                        handle_connect_error(error, Reason)
-                  end
+    SslOptions =  proplists:get_value(ssl_options , State#state.options, []),
+    case ssl:connect(Addr, State#state.port,
+                                [{cacertfile, proplists:get_value(cacertfile , SslOptions, "")},
+                                 {certfile, proplists:get_value(certfile, SslOptions, "")},
+                                 {keyfile, proplists:get_value(keyfile, SslOptions, "")}],
+                            State#state.connect_timeout) of
+        {ok, SSLSocket} ->
+            ok = ssl:setopts(SSLSocket, get_tcp_options(State)),
+            handle_connect(State, {ok, ssl, SSLSocket});
+        {error, Reason} ->
+            handle_connect_error(error, Reason)
     end.
 
 get_tcp_options(State) ->
